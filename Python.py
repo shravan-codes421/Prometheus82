@@ -1,7 +1,9 @@
 # Author: John Punch
 # Email: john@gamepadla.com
 # License: For non-commercial use only. See full license at https://github.com/cakama3a/Prometheus82/blob/main/LICENSE
-VERSION = "5.3.0.2"                 # Updated version with microsecond support
+from typing import Any
+
+VERSION = "5.3.0.1"                 # Updated version with microsecond support
 MAX_CONSECUTIVE_TIMEOUTS = 15       # Global limit for missed hits
 
 import time
@@ -12,9 +14,9 @@ import requests
 import webbrowser
 import os
 from serial.tools import list_ports
-from colorama import Fore, Style, init
+from colorama import Fore, Style, init  # for coloring some printf output
 import msvcrt
-import pygame
+import pygame  # for creating game to register button presses
 from pygame.locals import *
 import statistics
 import random
@@ -26,6 +28,7 @@ import threading
 import queue
 import math
 
+# The following import is for testing the Steam Controller (2026)
 try:
     import hid
 except ImportError:
@@ -37,7 +40,10 @@ ASYNC_LOG_STOP = None
 ASYNC_LOG_THREAD = None
 LAST_RENDER_CALL = None
 
-def _printer_loop():
+def _printer_loop() -> None:
+    """
+    A printing function intended to run on its own thread.
+    """
     last_flush = time.perf_counter()
     while ASYNC_LOG_STOP and not ASYNC_LOG_STOP.is_set():
         try:
@@ -55,7 +61,10 @@ def _printer_loop():
         except Exception:
             pass
 
-def start_async_logger():
+def start_async_logger() -> None:
+    """
+    Start the logger by trying to create a thread-safe queue, otherwise create a normal queue.
+    """
     global ASYNC_LOG_QUEUE, ASYNC_LOG_STOP, ASYNC_LOG_THREAD
     try:
         ASYNC_LOG_QUEUE = queue.SimpleQueue()
@@ -65,14 +74,22 @@ def start_async_logger():
     ASYNC_LOG_THREAD = threading.Thread(target=_printer_loop, daemon=True)
     ASYNC_LOG_THREAD.start()
 
-def stop_async_logger():
+def stop_async_logger() -> None:
+    """
+    Stops the logger.
+    """
     try:
         if ASYNC_LOG_STOP:
             ASYNC_LOG_STOP.set()
     except Exception:
         pass
 
-def async_log(message):
+def async_log(message:str) -> None:
+    """
+    Try to add messages to the queue, otherwise print the messages.
+    :param message: String message intended to add to the async queue or print out to the console.
+    :type message: str
+    """
     try:
         if ASYNC_LOG_QUEUE:
             ASYNC_LOG_QUEUE.put(str(message))
@@ -84,7 +101,10 @@ def async_log(message):
         except Exception:
             pass
 
-def clear_console_key_buffer():
+def clear_console_key_buffer() -> None:
+    """
+    Gathers keypresses if there are any waiting to be read. Only on Windows.
+    """
     if platform.system() != 'Windows':
         return
     try:
@@ -137,8 +157,21 @@ LAST_TEST_TIME_FILE_BUTTON = os.path.join(_TEMP_DIR, 'last_test_time_button.txt'
 LAST_TEST_TIME_FILE_STICK = os.path.join(_TEMP_DIR, 'last_test_time_stick.txt')
 
 # Function to check time since last test
-def check_cooling_period(leading_newline=True):
-    """Displays a premium cooling status dashboard in the console."""
+def check_cooling_period(leading_newline:bool=True) -> None:
+    """
+    Displays a premium cooling status dashboard in the console.
+
+    Example:
+    ┌─────────────────────────────────────────────┐
+    │ COOLING SYSTEM STATUS                       │
+    ├─────────────────────────────────────────────┤
+    │  ✅ Stick Solenoid:           READY         │
+    │  ✅ Button Solenoid:          READY         │
+    └─────────────────────────────────────────────┘
+
+    :param leading_newline: Whether or not a newline should be prepended to the status message.
+    :type leading_newline: bool
+    """
     CYAN = Fore.CYAN + Style.BRIGHT
     prefix = "\n" if leading_newline else ""
     print(f"{prefix}{CYAN}┌" + "─" * 45 + "┐")
@@ -171,7 +204,20 @@ def check_cooling_period(leading_newline=True):
     
     print(f"{CYAN}└" + "─" * 45 + f"┘{Style.RESET_ALL}")
 
-def get_cooling_remaining_seconds(test_type):
+def get_cooling_remaining_seconds(test_type:str) -> int:
+    """
+    Get remaining time of cooling before test is ready. First, a temporary text file that has the last recorded time
+    and cooling time in seconds is read. The format of the text is "last_recorded_time,cooling_seconds".
+    Second, based on the information in the file, the difference between the current time and the last recorded time
+    is calculated, and compared to the cooling time. If more time has elapsed than the cooling time, then this function
+    will return 0 (i.e. test is ready to proceed), otherwise a positive number will be returned, indicating that
+    there is still more cooldown time necessary.
+
+    :param test_type: String representing one of the test types (see constants for test types)
+    :type test_type: str
+    :rtype: int
+    """
+
     path = LAST_TEST_TIME_FILE_STICK if test_type == TEST_TYPE_STICK else LAST_TEST_TIME_FILE_BUTTON
     if not os.path.exists(path):
         return 0
@@ -189,7 +235,15 @@ def get_cooling_remaining_seconds(test_type):
     except (ValueError, IOError):
         return 0
 
-def save_test_completion_time(iterations, test_type):
+def save_test_completion_time(iterations: int, test_type: str) -> None:
+    """
+    TODO: what the function does
+
+    :param iterations: Number representing the progress of the test
+    :type iterations: int
+    :param test_type: String representing one of the test types (see constants for test types)
+    :type test_type: str
+    """
     if iterations <= 0 or test_type == TEST_TYPE_KEYBOARD:
         return
     try:
@@ -215,8 +269,15 @@ def save_test_completion_time(iterations, test_type):
     except IOError as e:
         print_error(f"Recording test completion time: {e}")
 
+
 # Function to test Arduino communication latency
-def test_arduino_latency(ser):
+def test_arduino_latency(ser: serial.Serial) -> float | None:
+    """
+    TODO description
+
+    :param ser: Number representing the progress of the test
+    :type ser: serial.Serial()
+    """
     print(f"\nTesting Arduino communication latency... {LATENCY_TEST_ITERATIONS} measurements")
     latencies = []
     ser.timeout = 1
@@ -245,7 +306,17 @@ def test_arduino_latency(ser):
         return None
 
 # Function to export statistics to CSV
-def export_to_csv(stats, gamepad_name, raw_results):
+def export_to_csv(stats:dict, gamepad_name:str, raw_results:list[float]):
+    """
+    TODO description
+
+    :param stats: todo
+    :type stats: dict
+    :param gamepad_name: todo
+    :type gamepad_name: str
+    :param raw_results: todo
+    :type raw_results: list[float]
+    """
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"latency_test_{timestamp}.csv"
     stats_copy = stats.copy()
@@ -290,27 +361,44 @@ def load_window_icon():
     
     return None
 
-# ASCII Logo
-print(f" ")
-print("██████╗ ██████╗  ██████╗ ███╗   ███╗███████╗████████╗██╗  ██╗███████╗██╗   ██╗███████╗   " + Fore.LIGHTRED_EX + " █████╗ ██████╗ " + Fore.RESET + "")
-print("██╔══██╗██╔══██╗██╔═══██╗████╗ ████║██╔════╝╚══██╔══╝██║  ██║██╔════╝██║   ██║██╔════╝   " + Fore.LIGHTRED_EX + "██╔══██╗╚════██╗" + Fore.RESET + "")
-print("██████╔╝██████╔╝██║   ██║██╔████╔██║█████╗     ██║   ███████║█████╗  ██║   ██║███████╗   " + Fore.LIGHTRED_EX + "╚█████╔╝ █████╔╝" + Fore.RESET + "")
-print("██╔═══╝ ██╔══██╗██║   ██║██║╚██╔╝██║██╔══╝     ██║   ██╔══██║██╔══╝  ██║   ██║╚════██║   " + Fore.LIGHTRED_EX + "██╔══██╗██╔═══╝ " + Fore.RESET + "")
-print("██║     ██║  ██║╚██████╔╝██║ ╚═╝ ██║███████╗   ██║   ██║  ██║███████╗╚██████╔╝███████║   " + Fore.LIGHTRED_EX + "╚█████╔╝███████╗" + Fore.RESET + "")
-print("╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝   " + Fore.LIGHTRED_EX + " ╚════╝ ╚══════╝" + Fore.RESET + "")                                                                                                 
-print(f"v.{VERSION} by John Punch (" + Fore.LIGHTRED_EX + "https://gamepadla.com" + Fore.RESET + ")")
-print(f"{Fore.YELLOW}Commercial use requires a license: https://github.com/cakama3a/Prometheus82/blob/main/LICENSE.md{Fore.RESET}")
-print(f" ")
-print(f"{Fore.CYAN}Professional gamepad latency tester with microsecond precision.{Fore.RESET}")
-print(f"{Fore.CYAN}Measures button and stick response time using Prometheus 82 hardware tester.{Fore.RESET}")
-print(f" ")
-print(f"Support the project: " + Fore.LIGHTRED_EX + "https://ko-fi.com/gamepadla" + Fore.RESET + "")
-print(f"How to use Prometheus 82: " + Fore.LIGHTRED_EX + "https://youtu.be/NBS_tU-7VqA" + Fore.RESET + "")
-print(f"GitHub page: " + Fore.LIGHTRED_EX + "https://github.com/cakama3a/Prometheus82" + Fore.RESET + "")
-print(f"{Style.DIM}To open links, press CTRL+Click{Style.RESET_ALL}")
 
-def get_input_with_countdown(prompt, menu=None, show_cooling=True, max_len=None):
-    """Reads user input while updating the cooling status in real-time and keeping the Pygame window responsive."""
+def print_ascii_logo() -> None:
+    """
+    Configures ASCII logo and prints it to console.
+
+    :returns: None
+    """
+
+    print(f" ")
+    print("██████╗ ██████╗  ██████╗ ███╗   ███╗███████╗████████╗██╗  ██╗███████╗██╗   ██╗███████╗   " + Fore.LIGHTRED_EX + " █████╗ ██████╗ " + Fore.RESET + "")
+    print("██╔══██╗██╔══██╗██╔═══██╗████╗ ████║██╔════╝╚══██╔══╝██║  ██║██╔════╝██║   ██║██╔════╝   " + Fore.LIGHTRED_EX + "██╔══██╗╚════██╗" + Fore.RESET + "")
+    print("██████╔╝██████╔╝██║   ██║██╔████╔██║█████╗     ██║   ███████║█████╗  ██║   ██║███████╗   " + Fore.LIGHTRED_EX + "╚█████╔╝ █████╔╝" + Fore.RESET + "")
+    print("██╔═══╝ ██╔══██╗██║   ██║██║╚██╔╝██║██╔══╝     ██║   ██╔══██║██╔══╝  ██║   ██║╚════██║   " + Fore.LIGHTRED_EX + "██╔══██╗██╔═══╝ " + Fore.RESET + "")
+    print("██║     ██║  ██║╚██████╔╝██║ ╚═╝ ██║███████╗   ██║   ██║  ██║███████╗╚██████╔╝███████║   " + Fore.LIGHTRED_EX + "╚█████╔╝███████╗" + Fore.RESET + "")
+    print("╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝   " + Fore.LIGHTRED_EX + " ╚════╝ ╚══════╝" + Fore.RESET + "")
+    print(f"v.{VERSION} by John Punch (" + Fore.LIGHTRED_EX + "https://gamepadla.com" + Fore.RESET + ")")
+    print(f"{Fore.YELLOW}Commercial use requires a license: https://github.com/cakama3a/Prometheus82/blob/main/LICENSE.md{Fore.RESET}")
+    print(f" ")
+    print(f"{Fore.CYAN}Professional gamepad latency tester with microsecond precision.{Fore.RESET}")
+    print(f"{Fore.CYAN}Measures button and stick response time using Prometheus 82 hardware tester.{Fore.RESET}")
+    print(f" ")
+    print(f"Support the project: " + Fore.LIGHTRED_EX + "https://ko-fi.com/gamepadla" + Fore.RESET + "")
+    print(f"How to use Prometheus 82: " + Fore.LIGHTRED_EX + "https://youtu.be/NBS_tU-7VqA" + Fore.RESET + "")
+    print(f"GitHub page: " + Fore.LIGHTRED_EX + "https://github.com/cakama3a/Prometheus82" + Fore.RESET + "")
+    print(f"{Style.DIM}To open links, press CTRL+Click{Style.RESET_ALL}")
+
+
+def get_input_with_countdown(prompt:str, menu=None, show_cooling:bool=True, max_len:int=None) -> str:
+    """
+    Reads user input while updating the cooling status in real-time and keeping the Pygame window responsive.
+
+    :param prompt: String that expects a response from the user (i.e. a question or a prompt)
+    :param menu: todo
+    :param show_cooling:todo
+    :param max_len:todo
+
+    :rtype: str
+    """
     if platform.system() != 'Windows':
         if menu: print(menu)
         res = input(prompt)
@@ -385,8 +473,7 @@ class SteamControllerDirect:
     VENDOR_USAGE_PAGE = 0xFF00
     REPORT_STATE = 0x42
     REPORT_EXTENDED_STATE = 0x45
-    REPORT_PUCK_STATE = 0x47
-    SERVICE_REPORTS = {0x7B}
+    REPORT_PUCK_STATE = 0x7B
     FEATURE_REPORT_CMD = 0x01
     FEATURE_REPORT_CMD_FALLBACK = 0x02
     CMD_CLEAR_DIGITAL_MAPPINGS = 0x81
@@ -428,7 +515,7 @@ class SteamControllerDirect:
         self._heartbeat = None
 
     @classmethod
-    def available_devices(cls):
+    def available_devices(cls) -> list[Any]:
         if hid is None:
             return []
         input_interfaces = []
@@ -487,7 +574,12 @@ class SteamControllerDirect:
         return [dev for dev in hid.enumerate() if dev.get("vendor_id") == cls.VALVE_VID]
 
     @classmethod
-    def diagnostic_lines(cls):
+    def diagnostic_lines(cls) -> list[str]:
+        """
+        Prepares user-facing dialog messages regarding the Steam Controller connectivity.
+
+        :rtype: list[str]
+        """
         if hid is None:
             return ["Python 'hid' package is not installed."]
         devices = cls.valve_devices()
@@ -515,7 +607,7 @@ class SteamControllerDirect:
         return cls.open_device(0)
 
     @classmethod
-    def open_device(cls, index):
+    def open_device(cls, index:int):
         devices = cls.available_devices()
         if index >= len(devices):
             return None
@@ -591,7 +683,7 @@ class SteamControllerDirect:
     def update(self):
         if not self.device:
             return
-        for _ in range(32):
+        for _ in range(8):
             try:
                 data = self.device.read(64, 0)
             except TypeError:
@@ -600,8 +692,6 @@ class SteamControllerDirect:
                 return
             if not data:
                 return
-            if data[0] in self.SERVICE_REPORTS:
-                continue
             if data[0] not in (self.REPORT_STATE, self.REPORT_EXTENDED_STATE, self.REPORT_PUCK_STATE) or len(data) < 18:
                 continue
             self._parse_state_report(data)
@@ -654,7 +744,13 @@ class SteamControllerDirect:
 
 
 class LatencyTester:
-    def __init__(self, gamepad, serial_port, test_type, contact_delay=CONTACT_DELAY, iterations=TEST_ITERATIONS, protocol=None):
+    def __init__(self,
+                 gamepad:pygame.joystick.JoystickType | SteamControllerDirect,  # todo this can also be a SteamController.something
+                 serial_port:serial.Serial,
+                 test_type:str,
+                 contact_delay:float=CONTACT_DELAY,
+                 iterations:int=TEST_ITERATIONS,
+                 protocol=None):
         self.joystick = gamepad
         self.serial = serial_port
         self.test_type = test_type
@@ -1574,8 +1670,23 @@ class LatencyTester:
 
         self.close_test_window()
 
-def detect_input_mode(name, guid, axes, num_hats, num_buttons):
-    """Detects protocol based on name, guid, resting axes state, and structural features."""
+def detect_input_mode(name, guid, axes, num_hats, num_buttons) -> str:
+    """
+    Detects protocol based on name, guid, resting axes state, and structural features.
+
+    :param name: todo
+    :type name:
+    :param guid: todo
+    :type guid:
+    :param axes: todo
+    :type axes:
+    :param num_hats: todo
+    :type num_hats:
+    :param num_buttons: todo
+    :type num_buttons:
+
+    :rtype str:
+    """
     n, g = name.lower(), guid.lower()
     guid_chunks = {g[i:i+4] for i in range(0, len(g), 4) if len(g[i:i+4]) == 4}
 
@@ -1615,7 +1726,13 @@ INPUT_MODE_AXIS_PAIRS = {
 }
 
 def detect_gamepad_mode(joystick):
-    """Detect gamepad mode (XInput, DInput, Sony, Switch) based on name and axes at rest"""
+    """
+    Detect gamepad mode (XInput, DInput, Sony, Switch, Steam) based on name and axes at rest
+
+    :param joystick:todo
+    :type joystick:todo
+
+    """
     time.sleep(0.1)  # Wait for initialization
     for _ in range(10):  # Warmup
         pygame.event.pump()
@@ -1625,7 +1742,14 @@ def detect_gamepad_mode(joystick):
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
     return detect_input_mode(joystick.get_name(), joystick.get_guid(), axes, joystick.get_numhats(), joystick.get_numbuttons())
 
-def server_protocol_name(protocol):
+def server_protocol_name(protocol:str) -> str:
+    """
+    Version of detected gamepad mode (detected_gamepad_mode) formatted for the server protocol.
+    :param protocol: Description of controller protocol
+    :type protocol: str
+
+    :rtype: str
+    """
     if protocol == "Steam Direct":
         return "Steam"
     return protocol if protocol else "Unknown"
@@ -1654,6 +1778,7 @@ def restart_current_program():
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if __name__ == "__main__":
+    print_ascii_logo()
     wait_on_exit = True
     pygame.init()
     init(autoreset=True) # Initialize colorama
@@ -1701,55 +1826,40 @@ if __name__ == "__main__":
     joystick = None
     detected_mode = None
     direct_steam_devices = SteamControllerDirect.available_devices()
-    
-    options = []
     if direct_steam_devices:
-        is_dongle = direct_steam_devices[0].get("product_id") == SteamControllerDirect.SC2026_DONGLE_PID
-        steam_name = "Steam Controller 2026 (Direct HID Puck)" if is_dongle else "Steam Controller 2026 (Direct HID USB)"
-        options.append(("steam", steam_name, None))
-        
-    for i in range(pygame.joystick.get_count()):
-        pj = pygame.joystick.Joystick(i)
-        options.append(("pygame", pj.get_name(), pj))
+        try:
+            joystick = SteamControllerDirect.open_first()
+            print(f"\nAutoselected gamepad: {joystick.get_name()}")
+        except (RuntimeError, OSError) as e:
+            print_error(f"Failed to open Steam Controller direct HID: {e}")
+            joystick = None
 
-    if len(options) == 0:
-        print_error("No gamepad found! Some features will be unavailable.")
-        if hid is None:
-            print_error("Direct Steam Controller support also needs the Python 'hid' package.")
-        else:
-            for line in SteamControllerDirect.diagnostic_lines():
-                print(f"{Fore.YELLOW}{line}{Fore.RESET}")
-            print(f"{Fore.YELLOW}Tip: close Steam while testing direct HID mode, and use a USB-C data cable, not a charge-only cable.{Fore.RESET}")
-    else:
-        if len(options) == 1:
-            choice = 0
-            prefix = "Autoselected"
-        else:
-            menu_gamepads = "Available gamepads:\n" + "\n".join([f"{i + 1}: {opt[1]}" for i, opt in enumerate(options)])
-            while True:
-                try:
-                    choice_input = get_input_with_countdown(f"Select gamepad (1-{len(options)}): ", menu_gamepads).strip()
-                    if not choice_input:
-                        continue
-                    if 0 < int(choice_input) <= len(options):
-                        choice = int(choice_input) - 1
+    if joystick is None:
+        joystick_count = pygame.joystick.get_count()
+        if joystick_count:
+            if joystick_count > 1:
+                menu_gamepads = "Available gamepads:\n" + "\n".join([f"{i + 1}: {pygame.joystick.Joystick(i).get_name()}" for i in range(joystick_count)])
+                while True:
+                    try:
+                        choice_input = get_input_with_countdown(f"Select gamepad (1-{joystick_count}): ", menu_gamepads).strip()
+                        if not choice_input:
+                            continue
+                        joystick = pygame.joystick.Joystick(int(choice_input) - 1)
+                        print(f"\nSelected gamepad: {joystick.get_name()}")
                         break
-                    print_error(f"Invalid selection! Please enter 1-{len(options)}.")
-                except ValueError:
-                    print_error("Invalid input! Please enter a number.")
-            prefix = "Selected"
-
-        opt_type, name, dev = options[choice]
-        if opt_type == "steam":
-            try:
-                joystick = SteamControllerDirect.open_first()
-            except (RuntimeError, OSError) as e:
-                print_error(f"Failed to open Steam Controller direct HID: {e}")
+                    except (ValueError, IndexError):
+                        print_error(f"Invalid selection! Please enter 1-{joystick_count}.")
+            else:
+                joystick = pygame.joystick.Joystick(0)
+                print(f"\nAutoselected gamepad: {joystick.get_name()}")
         else:
-            joystick = dev
-            
-        if joystick:
-            print(f"\n{prefix} gamepad: {joystick.get_name()}")
+            print_error("No gamepad found! Some features will be unavailable.")
+            if hid is None:
+                print_error("Direct Steam Controller support also needs the Python 'hid' package.")
+            else:
+                for line in SteamControllerDirect.diagnostic_lines():
+                    print(f"{Fore.YELLOW}{line}{Fore.RESET}")
+                print(f"{Fore.YELLOW}Tip: close Steam while testing direct HID mode, and use a USB-C data cable, not a charge-only cable.{Fore.RESET}")
 
     if joystick:
         joystick.init()
