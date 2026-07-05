@@ -13,6 +13,15 @@
       --accent: #9d2f2f;
       --accent-dark: #6d1f1f;
       --border: #d9cfc3;
+
+      /* CMYK Head cleaning colors */
+      --blue: #0055cc; /* Cyan/Blue */
+      --red: #d93838; /* Magenta/Red */
+      --red-bg: #fff5f5;
+      --red-text: #a62626;
+      --yellow: #d97706; /* Yellow/Amber */
+      --yellow-bg: #fffbeb;
+      --yellow-text: #b45309;
     }
 
     * {
@@ -73,6 +82,7 @@
       font-size: 26px;
       line-height: 1.1;
       margin: 20px 0 10px 0;
+      color: var(--blue);
     }
 
     .lead {
@@ -130,7 +140,7 @@
     h2 {
       font-size: 20px;
       margin: 0 0 12px;
-      color: var(--accent-dark);
+      color: var(--blue);
     }
 
     p {
@@ -153,8 +163,21 @@
     .note {
       margin-top: 22px;
       padding: 16px 18px;
-      border-left: 5px solid var(--accent);
-      background: #fff7f4;
+      border-left: 5px solid var(--red);
+      background: var(--red-bg);
+      color: var(--red-text);
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .warning-box {
+      margin-top: 14px;
+      margin-bottom: 14px;
+      padding: 14px 16px;
+      border-left: 5px solid var(--yellow);
+      background: var(--yellow-bg);
+      color: var(--yellow-text);
       border-radius: 10px;
       font-size: 14px;
       line-height: 1.6;
@@ -182,23 +205,79 @@
       line-height: 1.5;
     }
 
+    @page {
+      size: A4 portrait;
+      margin: 12mm;
+    }
+
     @media print {
-      body {
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+
+      html, body {
         padding: 0;
-        background: #fff;
+        margin: 0;
+        background: #fff !important;
       }
 
       .sheet {
-        max-width: none;
-        min-height: 100vh;
+        max-width: 100%;
+        width: 100%;
+        min-height: 0;
+        height: auto;
         margin: 0;
         border: none;
         border-radius: 0;
         box-shadow: none;
+        padding: 0;
+        box-sizing: border-box;
+        background: #fff !important;
+      }
+
+      html, body, .sheet {
+        page-break-inside: avoid;
+        break-inside: avoid;
+      }
+
+      .ascii-title {
+        margin: 15px 0 10px;
+        font-size: 7.5px;
+      }
+
+      h1 {
+        margin: 10px 0 5px 0;
+        font-size: 22px;
+      }
+
+      .lead {
+        font-size: 14px;
+      }
+
+      .qr-card {
+        width: 160px;
+        flex: 0 0 160px;
+        padding: 8px;
+        border-radius: 10px;
+      }
+
+      .grid {
+        gap: 16px;
+      }
+
+      .panel {
+        padding: 14px;
+        border-radius: 10px;
+      }
+
+      .footer {
+        margin-top: 16px;
+        padding-top: 12px;
       }
     }
 
-    @media (max-width: 760px) {
+    @media screen and (max-width: 760px) {
       .header,
       .grid,
       .footer {
@@ -231,10 +310,10 @@
  ██╔═══╝ ██╔══██╗██║   ██║██║╚██╔╝██║██╔══╝     ██║   ██╔══██║██╔══╝  ██║   ██║╚════██║ ██╔══██╗██╔═══╝ 
  ██║     ██║  ██║╚██████╔╝██║ ╚═╝ ██║███████╗   ██║   ██║  ██║███████╗╚██████╔╝███████║ ╚█████╔╝███████╗ 
  ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚══════╝   ╚═╝   ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚══════╝  ╚════╝ ╚══════╝</pre>
-        <h1>Thank you for your purchase</h1>
+        <h1>Thank you for choosing Prometheus 82</h1>
         <p class="lead">
-          Every Prometheus 82 unit is personally built and tested by John Punch before shipping.
-          I verify each device against a reference unit to make sure it performs as expected.
+          Every Prometheus 82 unit is personally built and tested before shipping.
+          Each device is verified against a reference unit to make sure it performs as expected.
         </p>
       </div>
       <aside class="qr-card">
@@ -258,9 +337,9 @@
           Prometheus 82 requires the Prometheus 82 software. Download the latest release here:
           github.com/cakama3a/Prometheus82/releases
         </p>
-        <p>
-          Power supply recommendation: use a 20W (or higher) power adapter. Weak adapters may cause unpredictable test results.
-        </p>
+        <div class="warning-box">
+          <strong>Power Recommendation:</strong> Use a 20W (or higher) power adapter. Weak adapters may cause unpredictable test results.
+        </div>
         <p>
           Each tester is checked before dispatch, including a comparison of measured latency behavior against a known-good reference sample.
           This helps ensure your unit arrives ready to use.
@@ -277,17 +356,13 @@
         <h2>If something goes wrong</h2>
         <p>
           Hardware failures during use are rare, but they are still possible. If a part wears out or stops working,
-          you can request a replacement part here:
+          you can request a replacement part.
         </p>
         <p>
-          ko-fi.com/s/a4c414c6f3
-        </p>
-        <p>
-          Choose <strong>Shipping Part</strong> and write in the chat which part you want to replace.
           Replacement parts are free; you only pay for shipping.
         </p>
         <p>
-          Warranty replacement is valid for one year after purchase.
+          Warranty replacement is valid for one year after receipt.
         </p>
 
         <div class="note">
@@ -296,13 +371,11 @@
         </div>
       </article>
     </section>
-
     <section class="footer">
-      <div class="signature">Built and tested personally by John Punch</div>
+      <div class="signature">Hand-built &amp; Tested</div>
       <div class="links">
-        Prometheus 82 by John Punch<br>
-        github.com/cakama3a/Prometheus82<br>
-        ko-fi.com/s/a4c414c6f3
+        Prometheus 82 Input Latency Tester<br>
+        github.com/cakama3a/Prometheus82
       </div>
     </section>
   </main>
