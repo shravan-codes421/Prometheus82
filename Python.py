@@ -1,11 +1,6 @@
 # Author: John Punch
 # Email: john@gamepadla.com
 # License: For non-commercial use only. See full license at https://github.com/cakama3a/Prometheus82/blob/main/LICENSE
-from typing import Any
-
-VERSION = "5.3.0.2"                 # Updated version with microsecond support
-MAX_CONSECUTIVE_TIMEOUTS = 15       # Global limit for missed hits
-
 import time
 import platform
 import gc
@@ -27,12 +22,43 @@ import ctypes
 import threading
 import queue
 import math
+from typing import Any, Tuple  # for typehints
 
 # The following import is for testing the Steam Controller (2026)
 try:
     import hid
 except ImportError:
     hid = None
+
+# version: MAJOR.MINOR.PATCH.REVISION
+PYTHON_VERSION_MAJOR = 5
+PYTHON_VERSION_MINOR = 3
+PYTHON_VERSION_PATCH = 0
+PYTHON_VERSION_REVISION = 2
+
+ARDUINO_VERSION_MAJOR = 1
+ARDUINO_VERSION_MINOR = 1
+ARDUINO_VERSION_PATCH = 1
+
+# Updated version with microsecond support
+VERSION = f"{PYTHON_VERSION_MAJOR}.{PYTHON_VERSION_MINOR}.{PYTHON_VERSION_PATCH}.{PYTHON_VERSION_REVISION}"
+MAX_CONSECUTIVE_TIMEOUTS = 15       # Global limit for missed hits
+
+# Commands and responses relevant to the Arduino Nano
+DELAY_TEST_CMD = b'D'
+DELAY_TEST_RESP = b'R'
+TRIGGER_SOLENOID_CMD = b'T'
+SWITCH_MADE_CONTACT_RESP = b'S'
+SET_PULSE_DURATION_CMD = b'P'
+SET_PULSE_DURATION_RESP = b'A'
+QUERY_CONTACT_CMD = b'Q'
+CONTACT_CLOSED_RESP = b'H'
+CONTACT_OPEN_RESP = b'U'
+
+STEAM_CONTROLLER_PUCK_STRING = "Steam Controller 2026 (Direct HID Puck)"
+STEAM_CONTROLLER_USB_STRING = "Steam Controller 2026 (Direct HID USB)"
+
+SECONDS_TO_MS = 1000000  # todo replace existing 1000000 and 1_000_000 with this constant
 
 # Async logging helpers placed before main so they exist at startup
 ASYNC_LOG_QUEUE = None
@@ -129,7 +155,7 @@ TEST_ITERATIONS = 400               # Number of test iterations
 PULSE_DURATION = 40                 # Solenoid pulse duration (ms)
 LATENCY_TEST_ITERATIONS = 1000      # Number of measurements for Arduino latency test
 HARDWARE_TEST_ITERATIONS = 10       # Number of iterations for hardware test
-STICK_SETUP_DEFLECTION_WAIT = 0.250
+STICK_SETUP_DEFLECTION_WAIT = 0.250 # seconds
 STICK_SETUP_FALLBACK_PULSE_DURATION = 80
 STICK_SETUP_FALLBACK_DEFLECTION_WAIT = 0.500
 STICK_SETUP_FALLBACK_MAX_ITERATIONS = 200
@@ -138,12 +164,12 @@ STICK_MAX_CONSECUTIVE_TIMEOUTS = 8
 # Variables that should not be changed without need
 COOLING_PERIOD_MINUTES = 10         # Cooling period in minutes
 COOLING_PERIOD_SECONDS = COOLING_PERIOD_MINUTES * 60  # Cooling period in seconds
-LOWER_QUANTILE = 0.02               # Lower quantile for filtering
-UPPER_QUANTILE = 0.98               # Upper quantile for filtering
+LOWER_QUANTILE = 0.02               # Lower quantile for filtering; 2%
+UPPER_QUANTILE = 0.98               # Upper quantile for filtering; 98%; TODO replace with 1-LOWER_QUANTILE
 STICK_THRESHOLD = 0.99              # Stick activation threshold
 RATIO = 5                           # Delay to pulse duration ratio
 CONTACT_DELAY = 0.2                 # Contact sensor delay (ms) for correction (will be updated after calibration)
-REQUIRED_ARDUINO_VERSION = "1.1.1"
+REQUIRED_ARDUINO_VERSION = f"{ARDUINO_VERSION_MAJOR}.{ARDUINO_VERSION_MINOR}.{ARDUINO_VERSION_PATCH}"  # todo this is cleaner but it is untested currently
 LATENCY_EQUALITY_THRESHOLD = 0.001  # Threshold for comparing latencies (ms)
 
 # Constants for test types
@@ -157,7 +183,7 @@ LAST_TEST_TIME_FILE_BUTTON = os.path.join(_TEMP_DIR, 'last_test_time_button.txt'
 LAST_TEST_TIME_FILE_STICK = os.path.join(_TEMP_DIR, 'last_test_time_stick.txt')
 
 # Function to check time since last test
-def check_cooling_period(leading_newline:bool=True) -> None:
+def check_cooling_period(leading_newline: bool = True) -> None:
     """
     Displays a premium cooling status dashboard in the console.
 
@@ -172,11 +198,11 @@ def check_cooling_period(leading_newline:bool=True) -> None:
     :param leading_newline: Whether or not a newline should be prepended to the status message.
     :type leading_newline: bool
     """
-    CYAN = Fore.CYAN + Style.BRIGHT
+    BRIGHT_CYAN = Fore.CYAN + Style.BRIGHT
     prefix = "\n" if leading_newline else ""
-    print(f"{prefix}{CYAN}┌" + "─" * 45 + "┐")
-    print(f"{CYAN}│ {Fore.WHITE}COOLING SYSTEM STATUS" + " " * 23 + f"{CYAN}│")
-    print(f"{CYAN}├" + "─" * 45 + f"┤{Style.RESET_ALL}")
+    print(f"{prefix}{BRIGHT_CYAN}┌" + "─" * 45 + "┐")
+    print(f"{BRIGHT_CYAN}│ {Fore.WHITE}COOLING SYSTEM STATUS" + " " * 23 + f"{BRIGHT_CYAN}│")
+    print(f"{BRIGHT_CYAN}├" + "─" * 45 + f"┤{Style.RESET_ALL}")
     
     test_types = [
         (TEST_TYPE_STICK, "Stick Solenoid"),
@@ -195,16 +221,16 @@ def check_cooling_period(leading_newline:bool=True) -> None:
             icon = "✅"
         
         # Manually construct the line with precise spacing
-        line = f"{CYAN}│{Style.RESET_ALL}  {icon} {label}:"
+        line = f"{BRIGHT_CYAN}│{Style.RESET_ALL}  {icon} {label}:"
         line += " " * (25 - len(label))
         line += f"{status_color}{status_text}{Style.RESET_ALL}"
         line += " " * (14 - len(status_text))
-        line += f"{CYAN}│"
+        line += f"{BRIGHT_CYAN}│"
         print(line)
     
-    print(f"{CYAN}└" + "─" * 45 + f"┘{Style.RESET_ALL}")
+    print(f"{BRIGHT_CYAN}└" + "─" * 45 + f"┘{Style.RESET_ALL}")
 
-def get_cooling_remaining_seconds(test_type:str) -> int:
+def get_cooling_remaining_seconds(test_type: str) -> int:
     """
     Get remaining time of cooling before test is ready. First, a temporary text file that has the last recorded time
     and cooling time in seconds is read. The format of the text is "last_recorded_time,cooling_seconds".
@@ -213,7 +239,7 @@ def get_cooling_remaining_seconds(test_type:str) -> int:
     will return 0 (i.e. test is ready to proceed), otherwise a positive number will be returned, indicating that
     there is still more cooldown time necessary.
 
-    :param test_type: String representing one of the test types (see constants for test types)
+    :param test_type: String representing one of the test types (see TEST_TYPE_ constants)
     :type test_type: str
     :rtype: int
     """
@@ -237,7 +263,14 @@ def get_cooling_remaining_seconds(test_type:str) -> int:
 
 def save_test_completion_time(iterations: int, test_type: str) -> None:
     """
-    TODO: what the function does
+    Records the completion of a test and updates its cooling timer.
+
+    The cooling time added is proportional to the number of iterations completed (10 minutes per 400 iterations).
+    If a cooling timer is already active for the specified test type, the newly calculated cooling time is added
+    to the remaining time. The updated timestamp and total cooling duration are then written to the corresponding
+    test state file, before being printed to the console.
+
+    Keyboard tests do not use a cooling timer and are ignored.
 
     :param iterations: Number representing the progress of the test
     :type iterations: int
@@ -273,9 +306,13 @@ def save_test_completion_time(iterations: int, test_type: str) -> None:
 # Function to test Arduino communication latency
 def test_arduino_latency(ser: serial.Serial) -> float | None:
     """
-    TODO description
+    Calculates the latency of communication between this program and the Arduino.
+    Sends a known command to the Arduino via serial and reads a response, and stores the time difference
+    between the command and response.
+    Repeats this a number of times (usually 1000), then prints the Minimum, Maximum, and Average latencies,
+    as well as the "Jitter" (standard deviation) latency, before returning the Average latency.
 
-    :param ser: Number representing the progress of the test
+    :param ser: Serial port information of Arduino Nano
     :type ser: serial.Serial()
     """
     print(f"\nTesting Arduino communication latency... {LATENCY_TEST_ITERATIONS} measurements")
@@ -286,9 +323,10 @@ def test_arduino_latency(ser: serial.Serial) -> float | None:
     
     for i in range(LATENCY_TEST_ITERATIONS):
         start = time.perf_counter()
-        ser.write(b'D')
+        # start delay test on Arduino
+        ser.write(DELAY_TEST_CMD)
         ser.flush()
-        if ser.read() == b'R':
+        if ser.read() == DELAY_TEST_RESP:
             latencies.append((time.perf_counter() - start) * 1000)  # Convert to ms
             
         else:
@@ -306,17 +344,19 @@ def test_arduino_latency(ser: serial.Serial) -> float | None:
         return None
 
 # Function to export statistics to CSV
-def export_to_csv(stats:dict, gamepad_name:str, raw_results:list[float]):
+def export_to_csv(stats: dict, gamepad_name: str, raw_results: list[float]) -> None:
     """
-    TODO description
+    Exports test statistics, raw results, and additional metadata to a CSV file.
 
-    :param stats: todo
+    :param stats: metadata of the latency testing (see get_statistics for return values)
     :type stats: dict
-    :param gamepad_name: todo
+    :param gamepad_name: name of gamepad
     :type gamepad_name: str
-    :param raw_results: todo
+    :param raw_results: todo run through the program once
     :type raw_results: list[float]
-    """
+
+    # todo add exception check if stats is None (possible from get_statistics())
+"""
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     filename = f"latency_test_{timestamp}.csv"
     stats_copy = stats.copy()
@@ -328,12 +368,24 @@ def export_to_csv(stats:dict, gamepad_name:str, raw_results:list[float]):
         writer.writeheader()
         writer.writerow(stats_copy)
     print(f"Data saved to file {filename}")
-def print_error(message):
+def print_error(message: str) -> None:
+    """
+    Prints error message in yellow font. todo could use logging package instead?
+
+    :param message: String to print.
+    :type message: str
+    """
     print(f"\n{Fore.YELLOW}Error: {message}{Fore.RESET}")
-def print_info(message):
+def print_info(message: str) -> None:
+    """
+    Prints info message in green font. todo could use logging package instead?
+
+    :param message: String to print.
+    :type message: str
+    """
     print(f"\n{Fore.GREEN}Info: {message}{Fore.RESET}")
 
-def load_window_icon():
+def load_window_icon() -> None | pygame.Surface:
     """Load window icon from various possible locations"""
     icon_paths = [
         "icon.png",  # Current directory
@@ -388,14 +440,16 @@ def print_ascii_logo() -> None:
     print(f"{Style.DIM}To open links, press CTRL+Click{Style.RESET_ALL}")
 
 
-def get_input_with_countdown(prompt:str, menu=None, show_cooling:bool=True, max_len:int=None) -> str:
+def get_input_with_countdown(prompt: str, menu: Any = None, show_cooling: bool = True, max_len: int = None) -> str:
     """
-    Reads user input while updating the cooling status in real-time and keeping the Pygame window responsive.
+    Reads user input to a menu expecting a response, while updating the cooling status in real-time and
+    keeping the Pygame window responsive.
+    Returns the user input.
 
     :param prompt: String that expects a response from the user (i.e. a question or a prompt)
-    :param menu: todo
-    :param show_cooling:todo
-    :param max_len:todo
+    :param menu: Optional custom menu to print. Default is None.
+    :param show_cooling: Whether to continuously refresh the cooling status messages or not. Default is True.
+    :param max_len: Maximum length of message user can input. Default is None (no limit).
 
     :rtype: str
     """
@@ -403,7 +457,7 @@ def get_input_with_countdown(prompt:str, menu=None, show_cooling:bool=True, max_
         if menu: print(menu)
         res = input(prompt)
         return res[:max_len] if max_len else res
-    inp, last, up = "", 0, (7 if show_cooling else 0) + (menu.count('\n') + 1 if menu else 0)
+    inp, last, up = "", 0, (7 if show_cooling else 0) + (menu.count('\n') + 1 if menu else 0)  # todo ??? it's assumed show_cooling_period prints 7 lines -- unmagic that.
     try:
         while True:
             # Keep Pygame window responsive if it's open
@@ -554,9 +608,9 @@ class SteamControllerDirect:
     def device_label(cls, dev, index=None):
         product_id = dev.get("product_id") or 0
         if product_id == cls.SC2026_DONGLE_PID:
-            prefix = "Steam Controller 2026 (Direct HID Puck)"
+            prefix = STEAM_CONTROLLER_PUCK_STRING
         else:
-            prefix = "Steam Controller 2026 (Direct HID USB)"
+            prefix = STEAM_CONTROLLER_USB_STRING
         usage_page = dev.get("usage_page")
         usage = dev.get("usage")
         iface = dev.get("interface_number")
@@ -719,8 +773,8 @@ class SteamControllerDirect:
 
     def get_name(self):
         if self.device_info and self.device_info.get("product_id") == self.SC2026_DONGLE_PID:
-            return "Steam Controller 2026 (Direct HID Puck)"
-        return "Steam Controller 2026 (Direct HID USB)"
+            return STEAM_CONTROLLER_PUCK_STRING
+        return STEAM_CONTROLLER_USB_STRING
 
     def get_guid(self):
         product_id = self.device_info.get("product_id") if self.device_info else None
@@ -748,7 +802,7 @@ class SteamControllerDirect:
 
 class LatencyTester:
     def __init__(self,
-                 gamepad:pygame.joystick.JoystickType | SteamControllerDirect,  # todo this can also be a SteamController.something
+                 gamepad:pygame.joystick.JoystickType | SteamControllerDirect,  # todo this may also be a SteamController.something
                  serial_port:serial.Serial,
                  test_type:str,
                  contact_delay:float=CONTACT_DELAY,
@@ -786,12 +840,12 @@ class LatencyTester:
         self.iterations = iterations
         self._bg_surface = None  # Pre-rendered background
 
-    def limit_iterations_for_fallback_pulse(self):
+    def limit_iterations_for_fallback_pulse(self) -> None:
         if self.test_type == TEST_TYPE_STICK and self.iterations > STICK_SETUP_FALLBACK_MAX_ITERATIONS:
             self.iterations = STICK_SETUP_FALLBACK_MAX_ITERATIONS
             print_info(f"Stronger solenoid pulse mode is limited to {self.iterations} measurements to reduce heating.")
 
-    def open_test_window(self):
+    def open_test_window(self) -> None:
         while True:
             try:
                 if not pygame.display.get_init():
@@ -810,7 +864,7 @@ class LatencyTester:
             except Exception:
                 time.sleep(0.5)
 
-    def wait_for_start(self):
+    def wait_for_start(self) -> None:
         if not hasattr(self, "_screen") or self._screen is None:
             self.open_test_window()
         if getattr(self, "_started", False):
@@ -887,10 +941,10 @@ class LatencyTester:
             pygame.display.flip()
             clock.tick(60)
 
-    def close_test_window(self):
+    def close_test_window(self) -> None:
         return
 
-    def _pre_render_bg(self):
+    def _pre_render_bg(self) -> None:
         """Pre-renders the static background and header to save CPU"""
         if self._bg_surface is not None:
             return
@@ -908,7 +962,7 @@ class LatencyTester:
         # Vertically center header text
         self._bg_surface.blit(header_surf, (25, 30 - header_surf.get_height() // 2))
 
-    def render_test_window(self, average_latency=None):
+    def render_test_window(self, average_latency=None) -> None:
         if not hasattr(self, "_screen") or self._screen is None:
             return
             
@@ -1041,7 +1095,13 @@ class LatencyTester:
         
         pygame.display.flip()
 
-    def check_stick_setup(self, iterations=5):
+    def check_stick_setup(self, iterations:int=5) -> None | bool:
+        """
+        Checks the analog stick setup. Returns True if it passes; False if there are contact errors with the
+        controller or sensor errors with contacting the controller; None if the stick isn't being tested.
+
+        :param iterations: Number of times to test the stick.
+        """
         if self.test_type != TEST_TYPE_STICK:
             return None
         if not self.serial:
@@ -1056,7 +1116,17 @@ class LatencyTester:
         self.limit_iterations_for_fallback_pulse()
         return self._check_stick_setup_once(iterations, STICK_SETUP_FALLBACK_DEFLECTION_WAIT, report_errors=True)
 
-    def _check_stick_setup_once(self, iterations=5, deflection_wait=STICK_SETUP_DEFLECTION_WAIT, report_errors=True):
+    def _check_stick_setup_once(self, iterations: int = 5,
+                                deflection_wait: float = STICK_SETUP_DEFLECTION_WAIT,
+                                report_errors: bool = True) -> None | bool:
+        """
+        Checks the analog stick deflection. Returns True if it passes; False if there are contact errors with the
+        controller or sensor errors with contacting the controller; None if the stick isn't being tested.
+
+        :param iterations: Number of times to test the stick
+        :param deflection_wait: Time to wait for stick deflection (seconds)
+        :param report_errors: Whether any errors should be printed to the console.
+        """
         if self.test_type != TEST_TYPE_STICK:
             return None
         if not self.serial:
@@ -1080,7 +1150,10 @@ class LatencyTester:
 
             max_deflection = 0.0
             
-            def update_deflection():
+            def update_deflection() -> None:
+                """
+                Updates the maximum deflection of the analog stick by testing the solenoid on the stick.
+                """
                 nonlocal max_deflection
                 if not self.stick_axes:
                     self.detect_active_stick()
@@ -1112,6 +1185,7 @@ class LatencyTester:
             t0 = time.perf_counter()
             while time.perf_counter() - t0 < 1.0:
                 if self.serial and self.serial.in_waiting and self.serial.read() == b'S':
+                    # perf counter is a float in seconds so we convert to microseconds (us)
                     contact_time_us = time.perf_counter() * 1000000
                     break
                 update_deflection()
@@ -1153,7 +1227,7 @@ class LatencyTester:
                     time.sleep(0.001)
                 
             deflection_pct = min(int(max_deflection * 100), 100)
-            
+            # todo 100 and 99 mean something, so have a variable to represent both numbers
             if deflection_pct < 99:
                 deflection_str = f"{Fore.RED}{deflection_pct}%{Fore.RESET}"
                 invalid_deflection_count += 1
@@ -1184,8 +1258,15 @@ class LatencyTester:
         print(f"{Fore.GREEN}Setup verification passed.{Fore.RESET}")
         return True
 
-    def set_pulse_duration(self, duration_ms):
-        """Sets the solenoid pulse duration"""
+    def set_pulse_duration(self, duration_ms: int) -> bool:
+        """
+        Sets the solenoid pulse duration. Try setting it in the Arduino three times with a 1-second timeout
+        in between each attempt. If it was set successfully, return True, otherwise return False.
+
+        :param duration_ms: Desired pulse duration in milliseconds.
+        :type duration_ms: int
+        :rtype: bool
+        """
         duration_ms = max(10, min(500, duration_ms))  # Limit the value
         self.pulse_duration_us = duration_ms * 1000
         self.test_interval_us = self.pulse_duration_us * RATIO
@@ -1210,7 +1291,7 @@ class LatencyTester:
         print_error("Failed to set pulse duration after 3 attempts. Continuing with default value.")
         return False
 
-    def detect_active_stick(self):
+    def detect_active_stick(self) -> bool:
         """Detects active stick movement beyond threshold and dynamically determines the axis pair."""
         if not self.joystick:
             return False
@@ -1249,7 +1330,7 @@ class LatencyTester:
                     return True
         return False
 
-    def detect_active_button(self):
+    def detect_active_button(self) -> bool:
         """Detects button press events"""
         if not self.joystick:
             return False
@@ -1261,7 +1342,7 @@ class LatencyTester:
                 return True
         return False
 
-    def detect_active_key(self):
+    def detect_active_key(self) -> bool:
         """Detects keyboard key press events"""
         keys = pygame.key.get_pressed()
         for k in (K_SPACE, K_RETURN):
@@ -1271,26 +1352,32 @@ class LatencyTester:
         return False
 
     def is_button_pressed(self):
-        """Checks if the selected button is pressed"""
+        """Checks if the selected button is pressed
+        todo docstring/type hints
+        """
         if isinstance(self.joystick, SteamControllerDirect):
             self.joystick.update()
         return self.button_to_test is not None and self.joystick and self.joystick.get_button(self.button_to_test)
 
     def is_key_pressed(self):
-        """Checks if the selected keyboard key is pressed"""
+        """Checks if the selected keyboard key is pressed
+        todo docstring/type hints
+        """
         if self.key_to_test is None:
             return False
         keys = pygame.key.get_pressed()
         return keys[self.key_to_test]
 
-    def log_progress(self, latency, early_g=False):
+    def log_progress(self, latency, early_g=False) -> None:
         """Logs test progress with percentage. Appends ⚡ if gamepad responded before Arduino 'S'."""
         progress = len(self.latency_results)
         marker = "  ⚡" if early_g else ""
         async_log(f"[{progress / self.iterations * 100:3.0f}%] {latency:.2f} ms{marker}")
 
-    def is_stick_at_extreme(self):
-        """Checks if stick is at extreme position, auto-locking to the primary axis on first hit."""
+    def is_stick_at_extreme(self) -> bool:
+        """Checks if stick is at extreme position, auto-locking to the primary axis on first hit.
+        todo docstring
+        """
         if not self.stick_axes or not self.joystick:
             return False
         if isinstance(self.joystick, SteamControllerDirect):
@@ -1308,20 +1395,20 @@ class LatencyTester:
                 return True
         return False
 
-    def trigger_solenoid(self):
+    def trigger_solenoid(self) -> None:
         """Sends command to Prometheus to activate the solenoid.
         Flushes the serial input buffer before sending 'T' to discard any stale 'S'
         bytes left from the previous cycle (contact bounce, etc.).
         s_time_us (latency reference) is set later when the fresh 'S' is received."""
         if self.serial:
             self.serial.reset_input_buffer()  # Discard stale 'S' bytes from previous cycle
-            self.serial.write(b'T')
+            self.serial.write(b'T')  # todo replace constants P, T, Q, D with names
         self.last_trigger_time_us = time.perf_counter() * 1_000_000  # T: timestamp for interval control
         self._cycle_active = True    # Open measurement window
         self._s_received = False     # Reset cycle flags
         self._g_received = False
 
-    def test_hardware(self):
+    def test_hardware(self) -> Tuple[bool, bool]:
         """Tests the solenoid and sensor functionality"""
         self.open_test_window()
         self.wait_for_start()
@@ -1448,7 +1535,7 @@ class LatencyTester:
         self.close_test_window()
         return successful_detections >= (iterations - 2), timing_warning
 
-    def _calculate_latency(self, input_time_us):
+    def _calculate_latency(self, input_time_us) -> float:
         """Calculates latency from timestamps: input_time_us minus s_time_us.
         Both values are captured with time.perf_counter() * 1_000_000 (microseconds)."""
         # Subtract the two absolute timestamps and convert µs → ms
@@ -1457,7 +1544,7 @@ class LatencyTester:
         latency_ms += self.contact_delay
         return latency_ms
 
-    def _poll_gamepad_input(self):
+    def _poll_gamepad_input(self) -> None | float:
         """Polls for gamepad/keyboard input.
         Returns timestamp in µs (G) the moment input is detected, or None if no input.
         Called every loop iteration once _cycle_active is True — independently of 'S' arrival.
@@ -1485,7 +1572,7 @@ class LatencyTester:
 
         return None
 
-    def get_statistics(self):
+    def get_statistics(self) -> None | dict:
         """Calculates test statistics"""
         if not self.latency_results:
             return None
@@ -1504,7 +1591,7 @@ class LatencyTester:
             'contact_delay': self.contact_delay
         }
 
-    def test_loop(self):
+    def test_loop(self) -> None:
         """Main test loop for stick or button tests with high-precision optimizations"""
         global LAST_RENDER_CALL
         LAST_RENDER_CALL = None
@@ -1673,20 +1760,20 @@ class LatencyTester:
 
         self.close_test_window()
 
-def detect_input_mode(name, guid, axes, num_hats, num_buttons) -> str:
+def detect_input_mode(name: str, guid: str, axes: list[float], num_hats: int, num_buttons: int) -> str:
     """
     Detects protocol based on name, guid, resting axes state, and structural features.
 
-    :param name: todo
-    :type name:
-    :param guid: todo
-    :type guid:
-    :param axes: todo
-    :type axes:
-    :param num_hats: todo
-    :type num_hats:
-    :param num_buttons: todo
-    :type num_buttons:
+    :param name: Name of controller, extracted from joystick.get_name
+    :type name: str
+    :param guid: Controller GUID, extracted from joystick.get_guid
+    :type guid: str
+    :param axes: List of all the axes of the controller.
+    :type axes: list[float]
+    :param num_hats: Number of hats on controller, extracted from joystick.get_numhats
+    :type num_hats: int
+    :param num_buttons: Number of buttons on controller, extracted from joystick.get_numbuttons
+    :type num_buttons: int
 
     :rtype str:
     """
@@ -1728,12 +1815,12 @@ INPUT_MODE_AXIS_PAIRS = {
     "Default": [(0, 1), (2, 3)]
 }
 
-def detect_gamepad_mode(joystick):
+def detect_gamepad_mode(joystick: pygame.joystick.Joystick) -> str:
     """
-    Detect gamepad mode (XInput, DInput, Sony, Switch, Steam) based on name and axes at rest
+    Detect gamepad mode (XInput, DInput, Sony, Switch, Steam) based on name and axes at rest.
+    See `detect_input_mode()` for algorithm on type of Input.
 
-    :param joystick:todo
-    :type joystick:todo
+    :param joystick: Controller under test, as a pygame.joystick.Joystick object.
 
     """
     time.sleep(0.1)  # Wait for initialization
@@ -1745,7 +1832,7 @@ def detect_gamepad_mode(joystick):
     axes = [joystick.get_axis(i) for i in range(joystick.get_numaxes())]
     return detect_input_mode(joystick.get_name(), joystick.get_guid(), axes, joystick.get_numhats(), joystick.get_numbuttons())
 
-def server_protocol_name(protocol:str) -> str:
+def server_protocol_name(protocol: str) -> str:
     """
     Version of detected gamepad mode (detected_gamepad_mode) formatted for the server protocol.
     :param protocol: Description of controller protocol
@@ -1758,11 +1845,16 @@ def server_protocol_name(protocol:str) -> str:
     return protocol if protocol else "Unknown"
 
 # Short ID Generation
-def generate_short_id(length=12):
-    """Generates a random short ID"""
+def generate_short_id(length: int = 12) -> str:
+    """
+    Generates a random short ID consisting of lowercase letters and numbers.
+
+    :param length: Desired length of ID.
+    :type length: int
+    """
     return ''.join(random.choice(string.ascii_letters + string.digits) for _ in range(length))
 
-def restart_current_program():
+def restart_current_program() -> None:
     try:
         stop_async_logger()
     except Exception:
@@ -1833,7 +1925,7 @@ if __name__ == "__main__":
     options = []
     if direct_steam_devices:
         is_dongle = direct_steam_devices[0].get("product_id") == SteamControllerDirect.SC2026_DONGLE_PID
-        steam_name = "Steam Controller 2026 (Direct HID Puck)" if is_dongle else "Steam Controller 2026 (Direct HID USB)"
+        steam_name = STEAM_CONTROLLER_PUCK_STRING if is_dongle else STEAM_CONTROLLER_USB_STRING
         options.append(("steam", steam_name, None))
 
     for i in range(pygame.joystick.get_count()):
@@ -2129,7 +2221,7 @@ if __name__ == "__main__":
                                     continue
                                 while True:
                                     test_key = generate_short_id()
-                                    gamepad_name = get_input_with_countdown("Enter gamepad name (max 60 chars): ", show_cooling=False, max_len=60).strip()
+                                    gamepad_name = get_input_with_countdown("Enter gamepad name (max 60 chars): ", show_cooling=False, max_len=60).strip()  # todo make 60 not-magic
                                     
                                     if not gamepad_name:
                                         print_error("Gamepad name cannot be empty!")
