@@ -58,13 +58,45 @@ CONTACT_OPEN_RESP = b'U'
 STEAM_CONTROLLER_PUCK_STRING = "Steam Controller 2026 (Direct HID Puck)"
 STEAM_CONTROLLER_USB_STRING = "Steam Controller 2026 (Direct HID USB)"
 
-SECONDS_TO_MS = 1000000  # todo replace existing 1000000 and 1_000_000 with this constant
+SECONDS_TO_MS = 1000000
 
 # Async logging helpers placed before main so they exist at startup
 ASYNC_LOG_QUEUE = None
 ASYNC_LOG_STOP = None
 ASYNC_LOG_THREAD = None
 LAST_RENDER_CALL = None
+
+# Global settings
+TEST_ITERATIONS = 400               # Number of test iterations
+PULSE_DURATION = 40                 # Solenoid pulse duration (ms)
+LATENCY_TEST_ITERATIONS = 1000      # Number of measurements for Arduino latency test
+HARDWARE_TEST_ITERATIONS = 10       # Number of iterations for hardware test
+STICK_SETUP_DEFLECTION_WAIT = 0.250 # seconds
+STICK_SETUP_FALLBACK_PULSE_DURATION = 80
+STICK_SETUP_FALLBACK_DEFLECTION_WAIT = 0.500
+STICK_SETUP_FALLBACK_MAX_ITERATIONS = 200
+STICK_MAX_CONSECUTIVE_TIMEOUTS = 8
+
+# Variables that should not be changed without need
+COOLING_PERIOD_MINUTES = 10         # Cooling period in minutes
+COOLING_PERIOD_SECONDS = COOLING_PERIOD_MINUTES * 60  # Cooling period in seconds
+LOWER_QUANTILE = 0.02               # Lower quantile for filtering; 2%
+UPPER_QUANTILE = 1-LOWER_QUANTILE   # Upper quantile for filtering; 98%;
+STICK_THRESHOLD = 0.99              # Stick activation threshold
+RATIO = 5                           # Delay to pulse duration ratio
+CONTACT_DELAY = 0.2                 # Contact sensor delay (ms) for correction (will be updated after calibration)
+REQUIRED_ARDUINO_VERSION = f"{ARDUINO_VERSION_MAJOR}.{ARDUINO_VERSION_MINOR}.{ARDUINO_VERSION_PATCH}"  # todo this is cleaner but it is untested currently
+LATENCY_EQUALITY_THRESHOLD = 0.001  # Threshold for comparing latencies (ms)
+
+# Constants for test types
+TEST_TYPE_STICK = "stick"
+TEST_TYPE_BUTTON = "button"
+TEST_TYPE_HARDWARE = "hardware"     # New test type for hardware check
+TEST_TYPE_KEYBOARD = "keyboard"
+
+_TEMP_DIR = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Temp') if platform.system() == 'Windows' else '/tmp'
+LAST_TEST_TIME_FILE_BUTTON = os.path.join(_TEMP_DIR, 'last_test_time_button.txt')
+LAST_TEST_TIME_FILE_STICK = os.path.join(_TEMP_DIR, 'last_test_time_stick.txt')
 
 def _printer_loop() -> None:
     """
@@ -150,37 +182,6 @@ if platform.system() == 'Windows':
         except Exception:
             pass  # If both fail, continue without DPI awareness
 
-# Global settings
-TEST_ITERATIONS = 400               # Number of test iterations
-PULSE_DURATION = 40                 # Solenoid pulse duration (ms)
-LATENCY_TEST_ITERATIONS = 1000      # Number of measurements for Arduino latency test
-HARDWARE_TEST_ITERATIONS = 10       # Number of iterations for hardware test
-STICK_SETUP_DEFLECTION_WAIT = 0.250 # seconds
-STICK_SETUP_FALLBACK_PULSE_DURATION = 80
-STICK_SETUP_FALLBACK_DEFLECTION_WAIT = 0.500
-STICK_SETUP_FALLBACK_MAX_ITERATIONS = 200
-STICK_MAX_CONSECUTIVE_TIMEOUTS = 8
-
-# Variables that should not be changed without need
-COOLING_PERIOD_MINUTES = 10         # Cooling period in minutes
-COOLING_PERIOD_SECONDS = COOLING_PERIOD_MINUTES * 60  # Cooling period in seconds
-LOWER_QUANTILE = 0.02               # Lower quantile for filtering; 2%
-UPPER_QUANTILE = 0.98               # Upper quantile for filtering; 98%; TODO replace with 1-LOWER_QUANTILE
-STICK_THRESHOLD = 0.99              # Stick activation threshold
-RATIO = 5                           # Delay to pulse duration ratio
-CONTACT_DELAY = 0.2                 # Contact sensor delay (ms) for correction (will be updated after calibration)
-REQUIRED_ARDUINO_VERSION = f"{ARDUINO_VERSION_MAJOR}.{ARDUINO_VERSION_MINOR}.{ARDUINO_VERSION_PATCH}"  # todo this is cleaner but it is untested currently
-LATENCY_EQUALITY_THRESHOLD = 0.001  # Threshold for comparing latencies (ms)
-
-# Constants for test types
-TEST_TYPE_STICK = "stick"
-TEST_TYPE_BUTTON = "button"
-TEST_TYPE_HARDWARE = "hardware"     # New test type for hardware check
-TEST_TYPE_KEYBOARD = "keyboard"
-
-_TEMP_DIR = os.path.join(os.path.expanduser('~'), 'AppData', 'Local', 'Temp') if platform.system() == 'Windows' else '/tmp'
-LAST_TEST_TIME_FILE_BUTTON = os.path.join(_TEMP_DIR, 'last_test_time_button.txt')
-LAST_TEST_TIME_FILE_STICK = os.path.join(_TEMP_DIR, 'last_test_time_stick.txt')
 
 # Function to check time since last test
 def check_cooling_period(leading_newline: bool = True) -> None:
@@ -1187,7 +1188,7 @@ class LatencyTester:
             while time.perf_counter() - t0 < 1.0:
                 if self.serial and self.serial.in_waiting and self.serial.read() == b'S':
                     # perf counter is a float in seconds so we convert to microseconds (us)
-                    contact_time_us = time.perf_counter() * 1000000
+                    contact_time_us = time.perf_counter() * SECONDS_TO_MS
                     break
                 update_deflection()
                 try:
@@ -1412,7 +1413,7 @@ class LatencyTester:
         if self.serial:
             self.serial.reset_input_buffer()  # Discard stale 'S' bytes from previous cycle
             self.serial.write(b'T')  # todo replace constants P, T, Q, D with names
-        self.last_trigger_time_us = time.perf_counter() * 1_000_000  # T: timestamp for interval control
+        self.last_trigger_time_us = time.perf_counter() * SECONDS_TO_MS  # T: timestamp for interval control
         self._cycle_active = True    # Open measurement window
         self._s_received = False     # Reset cycle flags
         self._g_received = False
@@ -1426,7 +1427,7 @@ class LatencyTester:
         # We need 11 presses to get 10 intervals.
         iterations = 11
         # Use standard test interval: pulse_duration * RATIO (converted to seconds)
-        interval_s = self.test_interval_us / 1000000.0
+        interval_s = self.test_interval_us / float(SECONDS_TO_MS)
         
         print(f"\nStarting hardware test with {iterations} iterations at {interval_s*1000:.0f}ms intervals...\n")
         
@@ -1565,19 +1566,19 @@ class LatencyTester:
             if not self.stick_axes and self.detect_active_stick():
                 return None  # axis just identified, not a measurement hit
             if self.is_stick_at_extreme():
-                return time.perf_counter() * 1_000_000  # G timestamp
+                return time.perf_counter() * SECONDS_TO_MS  # G timestamp
 
         elif self.test_type == TEST_TYPE_BUTTON:
             if self.button_to_test is None and self.detect_active_button():
                 return None
             if self.is_button_pressed():
-                return time.perf_counter() * 1_000_000  # G timestamp
+                return time.perf_counter() * SECONDS_TO_MS  # G timestamp
 
         elif self.test_type == TEST_TYPE_KEYBOARD:
             if self.key_to_test is None and self.detect_active_key():
                 return None
             if self.is_key_pressed():
-                return time.perf_counter() * 1_000_000  # G timestamp
+                return time.perf_counter() * SECONDS_TO_MS  # G timestamp
 
         return None
 
@@ -1633,9 +1634,9 @@ class LatencyTester:
         
         try:
             self.trigger_solenoid()
-            self._last_loop_time_us = time.perf_counter() * 1_000_000
+            self._last_loop_time_us = time.perf_counter() * SECONDS_TO_MS
             while len(self.latency_results) < self.iterations:
-                current_time_us = time.perf_counter() * 1_000_000
+                current_time_us = time.perf_counter() * SECONDS_TO_MS
                 loop_delta_us = current_time_us - self._last_loop_time_us
                 self._last_loop_time_us = current_time_us
 
@@ -1643,7 +1644,7 @@ class LatencyTester:
                 if not self._cycle_active:
                     if current_time_us - self.last_trigger_time_us >= self.test_interval_us:
                         self.trigger_solenoid()
-                        current_time_us = time.perf_counter() * 1_000_000
+                        current_time_us = time.perf_counter() * SECONDS_TO_MS
                         self._last_loop_time_us = current_time_us
 
                 if self._cycle_active:
@@ -1652,7 +1653,7 @@ class LatencyTester:
                     if not self._s_received and self.serial and self.serial.in_waiting:
                         while self.serial.in_waiting:
                             if self.serial.read() == b'S':
-                                self.s_time_us = time.perf_counter() * 1_000_000  # S timestamp
+                                self.s_time_us = time.perf_counter() * SECONDS_TO_MS  # S timestamp
                                 self._s_received = True
                                 s_found_now = True
                                 break
