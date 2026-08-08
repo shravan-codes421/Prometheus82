@@ -80,6 +80,19 @@ Software settings on the gamepad can significantly alter latency results.
 * **Arduino Choice:** Use a high-quality Arduino board with a self-delay of **≤0.5 ms**. You can verify this using [this script](https://github.com/cakama3a/Prometheus82/tree/main/ArduinoSpeedTestScript).
 * **Connection:** Plug the P82 device directly into a USB port on the PC motherboard. Avoid front-panel hubs or external splitters, as they can introduce jitter.
 
+> [!IMPORTANT]
+> **USB Chip Latency Warning (FTDI vs. CH340):**
+> * **CH340 chip:** (Standard on the recommended Arduino Nano clones). Works perfectly out of the box with no extra configuration.
+> * **FTDI chip (FT232R / FT232RL):** (Found on official Arduino boards and some premium clones).
+>   * **No COM port?** If the device isn't recognized, you must manually install the [FTDI VCP Drivers](https://ftdichip.com/drivers/vcp-drivers/).
+>   * **Latency Timer:** Windows defaults the FTDI latency timer to **16 ms**, which will silently ruin your measurements. **You must change it to 1 ms:**
+>     1. Open **Device Manager** on your PC.
+>     2. Expand **Ports (COM & LPT)**, right-click your **USB Serial Port**, and choose **Properties**.
+>     3. Go to the **Port Settings** tab and click **Advanced**.
+>     4. Change **Latency Timer (msec)** from `16` to **`1`**.
+>     5. Click **OK** to apply.
+
+
 #### Real-world Consistency (Live Statistics)
 The reliability of Prometheus 82 is documented through continuous comparative testing between independent devices and users. You can access the live [Latency Consistency Report here](https://gamepadla.com/latency/).
 
