@@ -1,6 +1,7 @@
 # Author: John Punch
 # Email: john@gamepadla.com
 # License: For non-commercial use only. See full license at https://github.com/cakama3a/Prometheus82/blob/main/LICENSE
+# To build this project, recreate the virtual environment and run 'pyinstaller --onefile --name "Prometheus82" Python.py'
 import time
 import platform
 import gc
@@ -46,7 +47,8 @@ MAX_CONSECUTIVE_TIMEOUTS = 15       # Global limit for missed hits
 
 # Commands and responses relevant to the Arduino Nano
 DELAY_TEST_CMD = b'D'
-DELAY_TEST_RESP = b'R'
+DELAY_TEST_READY_RESP = b'R'
+VERSION_PREAMBLE = b'V'
 TRIGGER_SOLENOID_CMD = b'T'
 SWITCH_MADE_CONTACT_RESP = b'S'
 SET_PULSE_DURATION_CMD = b'P'
@@ -58,7 +60,7 @@ CONTACT_OPEN_RESP = b'U'
 STEAM_CONTROLLER_PUCK_STRING = "Steam Controller 2026 (Direct HID Puck)"
 STEAM_CONTROLLER_USB_STRING = "Steam Controller 2026 (Direct HID USB)"
 
-SECONDS_TO_MS = 1000000
+SECONDS_TO_MS = 1000000  # multiply by this number to convert to ms
 
 # Async logging helpers placed before main so they exist at startup
 ASYNC_LOG_QUEUE = None
@@ -70,7 +72,9 @@ LAST_RENDER_CALL = None
 TEST_ITERATIONS = 400               # Number of test iterations
 PULSE_DURATION = 40                 # Solenoid pulse duration (ms)
 LATENCY_TEST_ITERATIONS = 1000      # Number of measurements for Arduino latency test
-HARDWARE_TEST_ITERATIONS = 10       # Number of iterations for hardware test
+MIN_TEST_ITERATIONS = 10
+MAX_TEST_ITERATIONS = 400               # Number of iterations for Prometheus 82 testing
+MIN_TEST_ITERATIONS_FOR_GAMEPADLA = 200 # Minimum number of measurements needed to upload results to Gamepadla
 STICK_SETUP_DEFLECTION_WAIT = 0.250 # seconds
 STICK_SETUP_FALLBACK_PULSE_DURATION = 80
 STICK_SETUP_FALLBACK_DEFLECTION_WAIT = 0.500
@@ -85,8 +89,11 @@ UPPER_QUANTILE = 1-LOWER_QUANTILE   # Upper quantile for filtering; 98%;
 STICK_THRESHOLD = 0.99              # Stick activation threshold
 RATIO = 5                           # Delay to pulse duration ratio
 CONTACT_DELAY = 0.2                 # Contact sensor delay (ms) for correction (will be updated after calibration)
-REQUIRED_ARDUINO_VERSION = f"{ARDUINO_VERSION_MAJOR}.{ARDUINO_VERSION_MINOR}.{ARDUINO_VERSION_PATCH}"  # todo this is cleaner but it is untested currently
+REQUIRED_ARDUINO_VERSION = f"{ARDUINO_VERSION_MAJOR}.{ARDUINO_VERSION_MINOR}.{ARDUINO_VERSION_PATCH}"
 LATENCY_EQUALITY_THRESHOLD = 0.001  # Threshold for comparing latencies (ms)
+NUMBER_OF_SHOW_COOLING_LINES = 6  # Number of lines displayed for cooling status
+MAX_CHARS_FOR_GAMEPADLA = 60  # maximum number of characters for controller name in Gamepadla upload
+MAX_DEFLECTION_PERCENTAGE = 100
 
 # Constants for test types
 TEST_TYPE_STICK = "stick"
@@ -170,21 +177,9 @@ def clear_console_key_buffer() -> None:
             msvcrt.getch()
     except Exception:
         pass
-# Enable DPI awareness for Windows to ensure sharp window rendering
-if platform.system() == 'Windows':
-    try:
-        # Try to set DPI awareness (Windows 8.1+)
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
-        try:
-            # Fallback for older Windows versions
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass  # If both fail, continue without DPI awareness
-
 
 # Function to check time since last test
-def check_cooling_period(leading_newline: bool = True) -> None:
+def check_cooling_period(leading_newline: bool = True) -> int:
     """
     Displays a premium cooling status dashboard in the console.
 
@@ -196,11 +191,14 @@ def check_cooling_period(leading_newline: bool = True) -> None:
     │  ✅ Button Solenoid:          READY         │
     └─────────────────────────────────────────────┘
 
-    :param leading_newline: Whether or not a newline should be prepended to the status message.
+    :param leading_newline: Whether a newline should be prepended to the status message.
     :type leading_newline: bool
     """
     BRIGHT_CYAN = Fore.CYAN + Style.BRIGHT
-    prefix = "\n" if leading_newline else ""
+    if leading_newline:
+        prefix = "\n"
+    else:
+        prefix = ""
     print(f"{prefix}{BRIGHT_CYAN}┌" + "─" * 45 + "┐")
     print(f"{BRIGHT_CYAN}│ {Fore.WHITE}COOLING SYSTEM STATUS" + " " * 23 + f"{BRIGHT_CYAN}│")
     print(f"{BRIGHT_CYAN}├" + "─" * 45 + f"┤{Style.RESET_ALL}")
@@ -230,6 +228,11 @@ def check_cooling_period(leading_newline: bool = True) -> None:
         print(line)
     
     print(f"{BRIGHT_CYAN}└" + "─" * 45 + f"┘{Style.RESET_ALL}")
+
+    return cooling_period_line_count(leading_newline)
+
+def cooling_period_line_count(leading_newline: bool = True) -> int:
+    return NUMBER_OF_SHOW_COOLING_LINES+1 if leading_newline else NUMBER_OF_SHOW_COOLING_LINES
 
 def get_cooling_remaining_seconds(test_type: str) -> int:
     """
@@ -327,7 +330,7 @@ def test_arduino_latency(ser: serial.Serial) -> float | None:
         # start delay test on Arduino
         ser.write(DELAY_TEST_CMD)
         ser.flush()
-        if ser.read() == DELAY_TEST_RESP:
+        if ser.read() == DELAY_TEST_READY_RESP:
             latencies.append((time.perf_counter() - start) * 1000)  # Convert to ms
             
         else:
@@ -345,33 +348,38 @@ def test_arduino_latency(ser: serial.Serial) -> float | None:
         return None
 
 # Function to export statistics to CSV
-def export_to_csv(stats: dict, gamepad_name: str, raw_results: list[float]) -> None:
+def export_to_csv(stats: dict|None, gamepad_name: str, raw_results: list[float], filename_prepend: str) -> None:
     """
     Exports test statistics, raw results, and additional metadata to a CSV file.
 
-    :param stats: metadata of the latency testing (see get_statistics for return values)
+    :param stats: metadata of the latency testing (see get_statistics() for return values)
     :type stats: dict
     :param gamepad_name: name of gamepad
     :type gamepad_name: str
-    :param raw_results: todo run through the program once
+    :param raw_results: All measurements from all trials, before filtering.
     :type raw_results: list[float]
+    """
+    if stats is not None:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        if filename_prepend != "":
+            # adding underscore to end of the prepend
+            filename_prepend += "_"
+        filename = f"{filename_prepend}latency_test_{timestamp}.csv"
+        stats_copy = stats.copy()
+        stats_copy['filtered_results'] = ', '.join(str(round(x, 2)) for x in stats['filtered_results'])
+        stats_copy['gamepad_name'] = gamepad_name  # Add gamepad name to stats
+        stats_copy['raw_results'] = ', '.join(str(round(x, 2)) for x in raw_results)  # Add raw results to stats
+        with open(filename, 'w', newline='') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=stats_copy.keys())
+            writer.writeheader()
+            writer.writerow(stats_copy)
+        print(f"Data saved to file {filename}")
+    else:
+        print_error("No statistics were recorded! Please re-run the test.")
 
-    # todo add exception check if stats is None (possible from get_statistics())
-"""
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    filename = f"latency_test_{timestamp}.csv"
-    stats_copy = stats.copy()
-    stats_copy['filtered_results'] = ', '.join(str(round(x, 2)) for x in stats['filtered_results'])
-    stats_copy['gamepad_name'] = gamepad_name  # Add gamepad name to stats
-    stats_copy['raw_results'] = ', '.join(str(round(x, 2)) for x in raw_results)  # Add raw results to stats
-    with open(filename, 'w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=stats_copy.keys())
-        writer.writeheader()
-        writer.writerow(stats_copy)
-    print(f"Data saved to file {filename}")
 def print_error(message: str) -> None:
     """
-    Prints error message in yellow font. todo could use logging package instead?
+    Prints error message in yellow font.
 
     :param message: String to print.
     :type message: str
@@ -379,7 +387,7 @@ def print_error(message: str) -> None:
     print(f"\n{Fore.YELLOW}Error: {message}{Fore.RESET}")
 def print_info(message: str) -> None:
     """
-    Prints info message in green font. todo could use logging package instead?
+    Prints info message in green font.
 
     :param message: String to print.
     :type message: str
@@ -458,7 +466,10 @@ def get_input_with_countdown(prompt: str, menu: Any = None, show_cooling: bool =
         if menu: print(menu)
         res = input(prompt)
         return res[:max_len] if max_len else res
-    inp, last, up = "", 0, (7 if show_cooling else 0) + (menu.count('\n') + 1 if menu else 0)  # todo ??? it's assumed show_cooling_period prints 7 lines -- unmagic that.
+    inp, last, up = ("",
+                     0,
+                     (cooling_period_line_count() if show_cooling else 0) + (menu.count('\n') + 1 if menu else 0)
+                     )
     try:
         while True:
             # Keep Pygame window responsive if it's open
@@ -475,9 +486,11 @@ def get_input_with_countdown(prompt: str, menu: Any = None, show_cooling: bool =
             
             now = time.time()
             if show_cooling and now - last >= 1:
+                # Hide the cursor, move to the start of the current line, then move upward by up lines.
                 if last: sys.stdout.write(f"\033[?25l\r\033[A" * up)
                 check_cooling_period(True)
                 if menu: print(menu)
+                # redraws the prompt/input, clears the rest of the line, and restores the cursor.
                 sys.stdout.write(f"\r{prompt}{inp}\033[K\033[?25h")
                 sys.stdout.flush(); last = now
             elif not show_cooling and last == 0:
@@ -487,7 +500,7 @@ def get_input_with_countdown(prompt: str, menu: Any = None, show_cooling: bool =
 
             if msvcrt.kbhit():
                 c = msvcrt.getch()
-                if c in b'\r\n':
+                if c in b'\r\n':  # checking for enter
                     if show_cooling and last > 0:
                         # Move up to the start of the whole block (cooling + menu)
                         sys.stdout.write(f"\r\033[A" * up + "\033[J")
@@ -498,15 +511,15 @@ def get_input_with_countdown(prompt: str, menu: Any = None, show_cooling: bool =
                     else:
                         print()
                     return inp.strip()
-                if c == b'\x08':
+                if c == b'\x08':  # checking for backspace
                     if len(inp) > 0:
                         inp = inp[:-1]
                         if show_cooling:
                             sys.stdout.write(f"\r\033[K{prompt}{inp}")
                         else:
                             sys.stdout.write("\b \b")
-                elif c == b'\x03': raise KeyboardInterrupt
-                elif c in b'\xe0\x00': msvcrt.getch()
+                elif c == b'\x03': raise KeyboardInterrupt  # Ctrl+C
+                elif c in b'\xe0\x00': msvcrt.getch()  # Invalid key (i.e. not a number)
                 else:
                     try:
                         char = c.decode('utf-8', errors='ignore')
@@ -1176,7 +1189,7 @@ class LatencyTester:
                                 max_deflection = val
 
             if self.serial:
-                self.serial.write(b'T')
+                self.serial.write(TRIGGER_SOLENOID_CMD)
                 try:
                     self.serial.flush()
                 except Exception:
@@ -1186,7 +1199,7 @@ class LatencyTester:
             contact_time_us = None
             t0 = time.perf_counter()
             while time.perf_counter() - t0 < 1.0:
-                if self.serial and self.serial.in_waiting and self.serial.read() == b'S':
+                if self.serial and self.serial.in_waiting and self.serial.read() == SWITCH_MADE_CONTACT_RESP:
                     # perf counter is a float in seconds so we convert to microseconds (us)
                     contact_time_us = time.perf_counter() * SECONDS_TO_MS
                     break
@@ -1208,14 +1221,14 @@ class LatencyTester:
                     update_deflection()
 
                     if self.serial:
-                        self.serial.write(b'Q')
+                        self.serial.write(QUERY_CONTACT_CMD)
                         self.serial.flush()
                         tQ = time.perf_counter()
                         while time.perf_counter() - tQ < 0.200:
                             if self.serial.in_waiting:
                                 resp = self.serial.read()
-                                if resp in (b'H', b'U'):
-                                    hold_ok = (resp == b'H')
+                                if resp in (CONTACT_CLOSED_RESP, CONTACT_OPEN_RESP):
+                                    hold_ok = (resp == CONTACT_CLOSED_RESP)
                                     break
                             
                             update_deflection()
@@ -1229,9 +1242,8 @@ class LatencyTester:
                     update_deflection()
                     time.sleep(0.001)
                 
-            deflection_pct = min(int(max_deflection * 100), 100)
-            # todo 100 and 99 mean something, so have a variable to represent both numbers
-            if deflection_pct < 99:
+            deflection_pct = min(int(max_deflection * 100), MAX_DEFLECTION_PERCENTAGE)
+            if deflection_pct < (MAX_DEFLECTION_PERCENTAGE - 1):
                 deflection_str = f"{Fore.RED}{deflection_pct}%{Fore.RESET}"
                 if i > 0:
                     invalid_deflection_count += 1
@@ -1289,12 +1301,12 @@ class LatencyTester:
         for _ in range(3):  # Send command and value (high byte, low byte)
             self.serial.reset_input_buffer()
             self.serial.reset_output_buffer()
-            self.serial.write(b'P')
+            self.serial.write(SET_PULSE_DURATION_CMD)
             self.serial.write(bytes([(duration_ms >> 8) & 0xFF, duration_ms & 0xFF]))
             self.serial.flush()
             start = time.time()
             while time.time() - start < 1.0:  # 1 second timeout
-                if self.serial.in_waiting and self.serial.read() == b'A':
+                if self.serial.in_waiting and self.serial.read() == SET_PULSE_DURATION_RESP:
                     print(f"Pulse duration successfully set to {duration_ms} ms ({self.pulse_duration_us} µs)")
                     return True
                 time.sleep(0.001)
@@ -1361,17 +1373,15 @@ class LatencyTester:
                 return True
         return False
 
-    def is_button_pressed(self):
+    def is_button_pressed(self) -> bool|None:
         """Checks if the selected button is pressed
-        todo docstring/type hints
         """
         if isinstance(self.joystick, SteamControllerDirect):
             self.joystick.update()
         return self.button_to_test is not None and self.joystick and self.joystick.get_button(self.button_to_test)
 
-    def is_key_pressed(self):
+    def is_key_pressed(self) -> bool|None:
         """Checks if the selected keyboard key is pressed
-        todo docstring/type hints
         """
         if self.key_to_test is None:
             return False
@@ -1386,7 +1396,6 @@ class LatencyTester:
 
     def is_stick_at_extreme(self) -> bool:
         """Checks if stick is at extreme position, auto-locking to the primary axis on first hit.
-        todo docstring
         """
         if not self.stick_axes or not self.joystick:
             return False
@@ -1412,7 +1421,7 @@ class LatencyTester:
         s_time_us (latency reference) is set later when the fresh 'S' is received."""
         if self.serial:
             self.serial.reset_input_buffer()  # Discard stale 'S' bytes from previous cycle
-            self.serial.write(b'T')  # todo replace constants P, T, Q, D with names
+            self.serial.write(TRIGGER_SOLENOID_CMD)
         self.last_trigger_time_us = time.perf_counter() * SECONDS_TO_MS  # T: timestamp for interval control
         self._cycle_active = True    # Open measurement window
         self._s_received = False     # Reset cycle flags
@@ -1453,7 +1462,7 @@ class LatencyTester:
                 if self.serial.in_waiting:
                     try:
                         b = self.serial.read()
-                        if b == b'S':
+                        if b == SWITCH_MADE_CONTACT_RESP:
                             # Record time immediately
                             now = time.perf_counter()
                             sensor_press_times.append(now)
@@ -1487,7 +1496,7 @@ class LatencyTester:
         while time.perf_counter() < end_wait:
              if self.serial.in_waiting:
                  try:
-                     if self.serial.read() == b'S':
+                     if self.serial.read() == SWITCH_MADE_CONTACT_RESP:
                          now = time.perf_counter()
                          sensor_press_times.append(now)
                          successful_detections += 1
@@ -1652,7 +1661,7 @@ class LatencyTester:
                     s_found_now = False
                     if not self._s_received and self.serial and self.serial.in_waiting:
                         while self.serial.in_waiting:
-                            if self.serial.read() == b'S':
+                            if self.serial.read() == SWITCH_MADE_CONTACT_RESP:
                                 self.s_time_us = time.perf_counter() * SECONDS_TO_MS  # S timestamp
                                 self._s_received = True
                                 s_found_now = True
@@ -1887,6 +1896,18 @@ def restart_current_program() -> None:
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 if __name__ == "__main__":
+    # Enable DPI awareness for Windows to ensure sharp window rendering
+    if platform.system() == 'Windows':
+        try:
+            # Try to set DPI awareness (Windows 8.1+)
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            try:
+                # Fallback for older Windows versions
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass  # If both fail, continue without DPI awareness
+
     print_ascii_logo()
     wait_on_exit = True
     pygame.init()
@@ -2026,26 +2047,30 @@ if __name__ == "__main__":
 
     # Select iterations (affects cooling timeout)
     if test_type in (TEST_TYPE_STICK, TEST_TYPE_BUTTON, TEST_TYPE_KEYBOARD):
-        menu_iters = "Select number of iterations:\n1: 400 (For Gamepadla.com validation)\n2: 200\n3: 100\nOr enter a custom number between 10 and 400."
+        menu_iters = (f"Select number of iterations:"
+                      f"\n1: {MAX_TEST_ITERATIONS} (For Gamepadla.com validation)"
+                      f"\n2: {MIN_TEST_ITERATIONS_FOR_GAMEPADLA}"
+                      f"\n3: {MAX_TEST_ITERATIONS//4}"
+                      f"\nOr enter a custom number between {MIN_TEST_ITERATIONS} and {MAX_TEST_ITERATIONS}.")
         while True:
             try:
-                iter_input = get_input_with_countdown("Enter your choice (1/2/3 or custom 10-400): ", menu_iters).strip()
+                iter_input = get_input_with_countdown(f"Enter your choice (1/2/3 or custom {MIN_TEST_ITERATIONS}-{MAX_TEST_ITERATIONS}): ", menu_iters).strip()
                 if iter_input == '1':
-                    TEST_ITERATIONS = 400
+                    TEST_ITERATIONS = MAX_TEST_ITERATIONS
                     break
                 elif iter_input == '2':
-                    TEST_ITERATIONS = 200
+                    TEST_ITERATIONS = MIN_TEST_ITERATIONS_FOR_GAMEPADLA
                     break
                 elif iter_input == '3':
-                    TEST_ITERATIONS = 100
+                    TEST_ITERATIONS = MAX_TEST_ITERATIONS//4
                     break
                 else:
                     custom_iters = int(iter_input)
-                    if 10 <= custom_iters <= 400:
+                    if MIN_TEST_ITERATIONS <= custom_iters <= MAX_TEST_ITERATIONS:
                         TEST_ITERATIONS = custom_iters
                         break
                     else:
-                        print_error("Invalid number! Please enter a value between 10 and 400.")
+                        print_error(f"Invalid number! Please enter a value between {MIN_TEST_ITERATIONS} and {MAX_TEST_ITERATIONS}.")
             except ValueError:
                 print_error("Invalid input! Please enter 1, 2, 3, or a number.")
 
@@ -2088,12 +2113,14 @@ if __name__ == "__main__":
             start_time = time.time()
             ready = False
             fw_version = None
+            # read the Arduino version (basically capture output of Arduino's print_firmware_version())
+            # Arduino's FW version is printed out as 'RVx.y.z\n'
             while time.time() - start_time < 5:
                 if ser.in_waiting:
                     b = ser.read()
-                    if b == b'R':
+                    if b == DELAY_TEST_READY_RESP:
                         ready = True
-                    elif b == b'V':
+                    elif b == VERSION_PREAMBLE:
                         buf = b""
                         t0 = time.time()
                         while time.time() - t0 < 1.0:
@@ -2112,7 +2139,7 @@ if __name__ == "__main__":
                 else:
                     time.sleep(0.001)
             if not ready:
-                print_error("Prometheus did not send ready signal ('R'). Check connection or Prometheus code.")
+                print_error(f"Prometheus did not send ready signal ({DELAY_TEST_READY_RESP}). Check connection or Prometheus code.")
                 input("Press Enter to close...")
                 pygame.quit()
                 sys.exit()
@@ -2204,8 +2231,8 @@ if __name__ == "__main__":
                         while True:
                             if uploaded_to_gamepadla:
                                 open_label = f"{Fore.LIGHTBLACK_EX}Open on Gamepadla.com (already used){Fore.RESET}"
-                            elif stats['valid_samples'] < 200:
-                                open_label = f"{Fore.LIGHTBLACK_EX}Open on Gamepadla.com (min 200 req.){Fore.RESET}"
+                            elif stats['valid_samples'] < MIN_TEST_ITERATIONS_FOR_GAMEPADLA:
+                                open_label = f"{Fore.LIGHTBLACK_EX}Open on Gamepadla.com (min {MIN_TEST_ITERATIONS_FOR_GAMEPADLA} req.){Fore.RESET}"
                             else:
                                 open_label = "Open on Gamepadla.com"
                             export_label = f"{Fore.LIGHTBLACK_EX}Export to CSV (already used){Fore.RESET}" if exported_to_csv else "Export to CSV"
@@ -2226,16 +2253,16 @@ if __name__ == "__main__":
                                     print_error("Invalid input! Please enter 1, 2, 3, or 4.")
 
                             if choice == 1:
-                                if stats['valid_samples'] < 200:
-                                    print_error(f"Test results cannot be uploaded to Gamepadla.com because they contain fewer than 200 measurements (current: {stats['valid_samples']}).")
-                                    print("Please run a test with at least 200 iterations to share your results.")
+                                if stats['valid_samples'] < MIN_TEST_ITERATIONS_FOR_GAMEPADLA:
+                                    print_error(f"Test results cannot be uploaded to Gamepadla.com because they contain fewer than {MIN_TEST_ITERATIONS_FOR_GAMEPADLA} measurements (current: {stats['valid_samples']}).")
+                                    print(f"Please run a test with at least {MIN_TEST_ITERATIONS_FOR_GAMEPADLA} iterations to share your results.")
                                     continue
                                 if uploaded_to_gamepadla:
                                     print(f"{Fore.YELLOW}Warning: This result has already been opened on Gamepadla.com. Restart the test to send a new result.{Fore.RESET}")
                                     continue
                                 while True:
                                     test_key = generate_short_id()
-                                    gamepad_name = get_input_with_countdown("Enter gamepad name (max 60 chars): ", show_cooling=False, max_len=60).strip()  # todo make 60 not-magic
+                                    gamepad_name = get_input_with_countdown(f"Enter gamepad name (max {MAX_CHARS_FOR_GAMEPADLA} chars): ", show_cooling=False, max_len=MAX_CHARS_FOR_GAMEPADLA).strip()
                                     
                                     if not gamepad_name:
                                         print_error("Gamepad name cannot be empty!")
@@ -2263,7 +2290,7 @@ if __name__ == "__main__":
                                     }
                                     try:
                                         response = requests.post('https://gamepadla.com/scripts/poster.php', data=data)
-                                        if response.status_code == 200:
+                                        if response.status_code == requests.codes.ok:  # 200
                                             print("Test results successfully sent to the server.")
                                             webbrowser.open(f'https://gamepadla.com/result/{test_key}/')
                                             uploaded_to_gamepadla = True
@@ -2277,7 +2304,9 @@ if __name__ == "__main__":
                                 if exported_to_csv:
                                     print(f"{Fore.YELLOW}Warning: This result has already been exported to CSV. Restart the test to export a new result.{Fore.RESET}")
                                     continue
-                                export_to_csv(stats, joystick.get_name() if joystick else "N/A", tester.latency_results)
+                                else:
+                                    custom_name = get_input_with_countdown("\nPrepend a custom string to the filename: ", show_cooling=False).strip()
+                                export_to_csv(stats, joystick.get_name() if joystick else "NA", tester.latency_results, custom_name)
                                 exported_to_csv = True
                                 continue
                             elif choice == 3:

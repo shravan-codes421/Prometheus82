@@ -3,7 +3,9 @@ const int SOLENOID_PIN = 2;  // pin that controls solenoid movement
 unsigned long PULSE_DURATION_US = 40000;
 // RESP means response. CMD means command.
 const char DELAY_TEST_CMD = 'D';
-const char DELAY_TEST_RESP = 'R';
+const char DELAY_TEST_READY_RESP = 'R';
+
+const char VERSION_PREAMBLE = 'V';
 
 const char TRIGGER_SOLENOID_CMD = 'T';
 const char SWITCH_MADE_CONTACT_RESP = 'S';
@@ -36,7 +38,8 @@ void print_firmware_version() {
     /*
     Prints firmware version of Arduino program in the form of RVx.y.z\n
     */
-    Serial.write("RV");
+    Serial.write(DELAY_TEST_READY_RESP);
+    Serial.write(VERSION_PREAMBLE);
     Serial.write(VERSION_MAJOR);
     Serial.write(".");
     Serial.write(VERSION_MINOR);
@@ -68,7 +71,7 @@ void loop() {
         
         // Fast handling of 'D' command for delay test
         if (cmd == DELAY_TEST_CMD) {
-            Serial.write(DELAY_TEST_RESP);
+            Serial.write(DELAY_TEST_READY_RESP);
             return; // Exit to avoid further checks
         }
         
